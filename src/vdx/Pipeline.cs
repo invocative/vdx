@@ -1,25 +1,51 @@
 ﻿namespace Invocative.VDX;
 
-using System.Collections.Concurrent;
-using System.IO.Hashing;
+using System;
+using System.IO;
+using System.Threading;
 using Newtonsoft.Json;
 using Spectre.Console;
+using Spectre.Console.Rendering;
 
 public static class _
 {
+    public static DirectoryInfo Assets = new("C:\\git\\ElementarySandbox.V2\\Assets");
     public static void Main(string[] args)
     {
-        var p = new Pipeline();
-        p.CollectFiles(new DirectoryInfo("C:\\git\\ElementarySandbox.V2\\Assets"));
+        var ctn = new DirectoryInfo("./content");
+
+        ctn.Delete(true);
+        var p = new VdxAssembler(Assets, ctn, "ElementarySandbox");
+        var textures = new List<FileInfo>();
+
+        foreach (var png in Assets.GetFiles("*.png", SearchOption.AllDirectories)) textures.Add(png);
+        foreach (var png in Assets.GetFiles("*.jpg", SearchOption.AllDirectories)) textures.Add(png);
+
+        var size = textures.Max(x => x.Length);
+
+
+        foreach (var info in textures) p.AddTexture(info);
+
+
+        p.Seal().FlushToDisk();
+
     }
 }
 
 
-public class Pipeline
+public static class VDXConstants
 {
-    public static int ALIGN = 512;
+    public const string VDX_TEXTURE_GROUP = "textures";
+    public const string VDX_AUDIO_GROUP = "audio";
+    public const string VDX_MODEL_GROUP = "models";
+    public const string VDX_CONFIG_GROUP = "config";
+    public const string VDX_NONE_GROUP = "<root>";
 
-    public List<string> TEXTURE_EXT = new ()
+
+    public const int VDX_CHUNK_SIZE = 200 * 1024 * 1024;
+    
+    
+    public static List<string> TEXTURE_EXT = new()
     {
         ".png",
         ".bmp",
@@ -27,175 +53,87 @@ public class Pipeline
         ".jpg"
     };
 
-    public List<string> MODEL_EXT = new ()
+    public static List<string> MODEL_EXT = new()
     {
         ".fbx", // autodesk fbx
         ".obj",
         ".gltf" // opengl scene 
     };
 
-    public List<string> AUDIO_EXT = new ()
+    public static List<string> AUDIO_EXT = new()
     {
         ".wav",
     };
-    
-    public List<string> NO_PACK_EXT = new ()
-    {
-        ".json", ".ini", ".xml",
-        ".js", ".mjs",
-        ".yaml", ".yml",
-        ".html",
-        ".css",
-        ".svg",
-        ".jsm",
-        ".md",
-    };
-
-    public List<string> IGNORED_EXT = new ()
-    {
-        // ignore binaries and portable debug symbols
-        ".pdb",
-        ".mdb",
-        ".bin",
-
-        // ignore unity specifics
-        ".meta",
-        ".physicsMaterial2D",
-        ".sceneWithBuildSettings",
-        ".buildconfiguration",
-        ".asset",
-        ".mat",
-        ".prefab",
-        ".unity",
-        ".asmdef",
-
-
-        // ignore code and binaries
-        ".cs",
-        ".dll",
-        ".dylib",
-        ".so",
-        
-        ".txt",
-        ".pak",
-        ".pdf",
-
-
-        // ignore mac os specifics
-        ".icns",
-        ".plist",
-
-        // shared cyrrently is not support for packing
-        ".cginc",
-        ".compute",
-        ".shader",
-
-        // fonts currently is not supported for packing
-        ".ttf",
-        ".woff2",
-
-        // psd too
-        ".psd",
-    };
-    
-    public ConcurrentBag<VdxEntity> VdxEntities = new ConcurrentBag<VdxEntity>();
-
-    public void CollectFiles(DirectoryInfo contentFolder)
-    {
-        var groups = contentFolder.GetDirectories();
-
-
-        foreach (var group in groups)
-        {
-            CollectAudio(group);
-            CollectModels(group);
-            CollectTextures(group);
-        }
-
-        CollectNoPackEntities(contentFolder);
-        BumpNoPackedEntities(contentFolder);
-        //new Crc32().
-    }
-
-
-    public void BumpNoPackedEntities(DirectoryInfo contentFolder)
-    {
-        var ignored = contentFolder.GetFiles("*.*", SearchOption.AllDirectories)
-            .Where(x => !TEXTURE_EXT.Contains(x.Extension, StringComparer.InvariantCultureIgnoreCase))
-            .Where(x => !MODEL_EXT.Contains(x.Extension, StringComparer.InvariantCultureIgnoreCase))
-            .Where(x => !AUDIO_EXT.Contains(x.Extension, StringComparer.InvariantCultureIgnoreCase))
-            .Where(x => !NO_PACK_EXT.Contains(x.Extension, StringComparer.InvariantCultureIgnoreCase))
-            .Where(x => !IGNORED_EXT.Contains(x.Extension, StringComparer.InvariantCultureIgnoreCase))
-            .Where(x => !x.Extension.Contains("~"))
-            .Where(x => !x.Attributes.HasFlag(FileAttributes.Hidden));
-
-
-        foreach (var info in ignored)
-        {
-            AnsiConsole.Markup($"File '");
-            AnsiConsole.Write(new TextPath(info.FullName));
-            AnsiConsole.MarkupLine("' has been [red]ignored[/]!");
-        }
-            
-    }
-
-    public void CollectAudio(DirectoryInfo dir) =>
-        CollectFor(dir, AUDIO_EXT, "audio");
-    public void CollectModels(DirectoryInfo dir) =>
-        CollectFor(dir, MODEL_EXT, "models");
-    public void CollectTextures(DirectoryInfo dir) =>
-        CollectFor(dir, TEXTURE_EXT, "textures");
-    public void CollectNoPackEntities(DirectoryInfo dir) =>
-        CollectFiles(dir.GetFiles("*.*", SearchOption.AllDirectories)
-            .Where(x => NO_PACK_EXT.Contains(x.Extension, StringComparer.InvariantCultureIgnoreCase)).ToList(), null);
-
-    public void CollectFor(DirectoryInfo dir, List<string> exts, string? group = null) =>
-        CollectFiles(dir.GetFiles("*.*", SearchOption.AllDirectories)
-            .Where(x => exts.Contains(x.Extension, StringComparer.InvariantCultureIgnoreCase)).ToList(), group ?? dir.Name);
-
-
-    public void CollectFiles(List<FileInfo> files, string? group)
-    {
-        foreach (var file in files)
-        {
-            var meta = GetMetaFor(file);
-
-            VdxEntities.Add(new VdxEntity()
-            {
-                Crc32 = -1,
-                Group = group?.ToLowerInvariant() ?? "NO+PACK",
-                ID = Guid.NewGuid(),
-                Size = (ulong)file.Length,
-                Tags = meta?.Tags ?? new (),
-                UtfName = file.Name,
-                OriginalEntityPath = file.FullName
-            });
-        }
-    }
-
-    public EntityTextMeta? GetMetaFor(FileInfo file)
-    {
-        var metafile = new FileInfo($"{file.FullName}.vxmeta");
-
-        if (!metafile.Exists)
-            return null;
-        return JsonConvert.DeserializeObject<EntityTextMeta>(File.ReadAllText(metafile.FullName));
-    }
 }
 
-public class EntityTextMeta
+public class VdxArchive
 {
-    public string TargetFileName;
-    public List<string> Tags = new List<string>();
+    
 }
 
-public record struct VdxEntity
+
+public class VirtualFile
 {
-    public Guid ID;
-    public string UtfName;
-    public ulong Size;
-    public string Group;
-    public List<string> Tags;
-    public long Crc32;
-    public string OriginalEntityPath;
+    public Guid ID { get; }
+    public VdxEntity Entity { get; }
+    public Uri Path { get; }
+
+    private VdxRepository _vdx;
+    public VirtualFile(VdxRepository self, Uri path, VdxEntity entity) 
+        => (_vdx, Path, ID, Entity) = (self, path, entity.ID, entity);
+
+    
+}
+
+public class VdxRepository
+{
+    private readonly DirectoryInfo _contentFolder;
+    private readonly Dictionary<string, VdxDirectoryInfo> _tables = new ();
+    private readonly Dictionary<string, string> _tables_pathes = new ();
+
+    private readonly Dictionary<Guid, VirtualFile> _entities = new ();
+
+    private bool isOpened;
+
+    public VdxRepository(DirectoryInfo contentFolder)
+    {
+        _contentFolder = contentFolder;
+
+        if (!_contentFolder.Exists)
+            throw new DirectoryNotFoundException($"{_contentFolder.FullName} is not exist.");
+    }
+
+    public VirtualFile Get(Uri path)
+    {
+        var @namespace = path.Segments.Length == 1 ? VDXConstants.VDX_NONE_GROUP : path.Host;
+        if (!_tables.ContainsKey(@namespace))
+            throw new ArgumentException($"No '{@namespace}' namespace found.");
+        var table = _tables[@namespace];
+        var folder = _tables_pathes[@namespace];
+
+        if (!_entities.ContainsKey(folder))
+            throw new ArgumentException($"No loaded entities.");
+    }
+
+
+    public async Task OpenAsync()
+    {
+        if (isOpened) return;
+        var tables = _contentFolder.GetFiles("*.vft", SearchOption.AllDirectories);
+
+        if (tables.Length == 0)
+            throw new Exception("No any vft files found!");
+
+        foreach (var info in tables)
+        {
+            var content = await File.ReadAllTextAsync(info.FullName);
+            var obj = JsonConvert.DeserializeObject<VdxDirectoryInfo>(content);
+            if (obj is null)
+                throw new Exception("");
+            _tables.Add(obj.Group, obj);
+            _tables_pathes.Add(obj.Group, info.Directory.FullName);
+        }
+
+        isOpened = true;
+    }
 }

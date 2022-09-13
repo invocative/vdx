@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "cli": {
+      "commandName": "Project",
+      "commandLineArgs": "package C:\\git\\ElementarySandbox.V2\\Assets -g ElementarySandbox"
+    }
+  }
+}
