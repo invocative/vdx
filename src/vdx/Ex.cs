@@ -36,4 +36,14 @@ public static class Ex
         writer.Write(Encoding.UTF8.GetBytes(str));
         writer.Write(new byte[] { 0xCD });
     }
+
+
+    public static string ReadASCIIString(this BinaryReader reader, int size)
+    {
+        var result = new byte[size];
+
+        reader.Read(result);
+
+        return Encoding.ASCII.GetString(result);
+    }
 }
