@@ -7,7 +7,6 @@ using Newtonsoft.Json;
 
 public class VdxAssembler
 {
-    public const int VDX_VERSION = 1;
 
     private readonly DirectoryInfo _rootFolder;
     private readonly DirectoryInfo _contentFolder;
@@ -123,10 +122,13 @@ public class VdxAssembler
 
         var entities = @in.AsReadOnly();
 
-        WriteHeader(writer, entities);
+        var slots = WriteHeader(writer, entities);
+        var addresses = new List<long>();
 
         foreach (var entity in entities)
-            WriteContent(writer, entity);
+            addresses.Add(WriteContent(writer, entity));
+
+        RemapAddresses(writer, slots, addresses);
 
         _log($"[[[blue]VDX[/]]] Data bank has been [green]success[/] writed to '{file.FullName}'");
         writer.Flush();
@@ -137,16 +139,18 @@ public class VdxAssembler
     }
 
 
-    private void WriteHeader(BinaryWriter writer, IReadOnlyCollection<VdxEntity> entities)
+    private List<long> WriteHeader(BinaryWriter writer, IReadOnlyCollection<VdxEntity> entities)
     {
-        writer.Write(Encoding.ASCII.GetBytes("VDX"));
-        writer.Write(VDX_VERSION);
-        writer.Write(Encoding.ASCII.GetBytes(_gameName));
-        writer.Write(new byte[2] { 0xFF, 0xFF });
+        var addresses = new List<long>();
 
+        writer.Write(Encoding.ASCII.GetBytes("VDX0"));
+        writer.Write(VDXConstants.VDX_VERSION);
+        var gm = Encoding.ASCII.GetBytes(_gameName);
+        writer.Write(gm.Length);
+        writer.Write(gm);
+        writer.Write(new byte[64]); // reserved
 
         writer.Write(entities.Count);
-        writer.Write(new byte[] { 0xF1 });
         foreach (var entity in entities)
         {
             // 16 bytes
@@ -157,13 +161,18 @@ public class VdxAssembler
             writer.WriteVdxString(entity.Group);
             writer.Write(entity.Crc64);
             writer.Write(entity.Size);
+            addresses.Add(writer.BaseStream.Position);
+            writer.Write(long.MaxValue); // slot for address pointer
         }
         writer.Write(new byte[2] { 0xFF, 0xFF });
+
+        return addresses;
     }
 
 
-    private void WriteContent(BinaryWriter writer, VdxEntity entity)
+    private long WriteContent(BinaryWriter writer, VdxEntity entity)
     {
+        var startAddr = writer.BaseStream.Position;
         using var fsRead = File.OpenRead(entity.OriginalEntityPath);
         var bufferSize = 2048;
         var buffer = new byte[bufferSize];
@@ -185,6 +194,20 @@ public class VdxAssembler
 
             writer.Write(buffer);
         }
+
+        return startAddr;
+    }
+
+
+    private void RemapAddresses(BinaryWriter writer, List<long> slots, List<long> addresses)
+    {
+        foreach (var (slot, i) in slots.Select((x, i) => (x, i)))
+        {
+            writer.BaseStream.Position = slot;
+            writer.Write(addresses[i]);
+        }
+
+        writer.BaseStream.Position = writer.BaseStream.Length;
     }
 
     private (string group, Dictionary<int, List<VdxEntity>>) PrepareChunks(IGrouping<string, VdxEntity> group)

@@ -37,6 +37,17 @@ public static class Ex
         writer.Write(new byte[] { 0xCD });
     }
 
+    public static string ReadVdxString(this BinaryReader reader)
+    {
+        reader.Assert(0xAB);
+        var len = reader.ReadInt32();
+        var bts = new byte[len];
+        reader.Read(bts);
+        var str = Encoding.UTF8.GetString(bts);
+        reader.Assert(0xCD);
+
+        return str;
+    }
 
     public static string ReadASCIIString(this BinaryReader reader, int size)
     {
@@ -45,5 +56,26 @@ public static class Ex
         reader.Read(result);
 
         return Encoding.ASCII.GetString(result);
+    }
+
+    public unsafe static Guid ReadGuid(this BinaryReader reader)
+    {
+        var result = new byte[sizeof(Guid)];
+
+        reader.Read(result);
+
+        return new Guid(result);
+    }
+
+    public static void Skip(this BinaryReader reader, int size)
+    {
+        var result = new byte[size];
+        reader.Read(result);
+    }
+
+    public static void Assert(this BinaryReader reader, byte to)
+    {
+        if (to != reader.ReadByte())
+            throw new Exception("Format bad");
     }
 }
